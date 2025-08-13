@@ -51,7 +51,7 @@ def get_structured_query(user_query: str) -> SearchQuery:
         ],
     )
 
-def build_qdrant_filter(structured_query: SearchQuery) -> Optional[models.Filter]:
+def qdrant_filter(structured_query: SearchQuery) -> Optional[models.Filter]:
     if not structured_query.filters:
         return None
     
@@ -77,7 +77,7 @@ def run_query(user_query: str):
 
     query_vector = embedding_model.encode(structured_query.query).tolist()
     
-    query_filter = build_qdrant_filter(structured_query)
+    query_filter = qdrant_filter(structured_query)
 
     search_results = qdrant_client.search(
         collection_name=collection_name,
