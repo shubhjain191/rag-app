@@ -74,8 +74,6 @@ def run_query(user_query: str):
     print(f"Processing query: '{user_query}'")
     
     structured_query = get_structured_query(user_query)
-    print(f"-> Understood query: {structured_query.query}")
-    print(f"-> Applying filters: {structured_query.filters}")
 
     query_vector = embedding_model.encode(structured_query.query).tolist()
     
