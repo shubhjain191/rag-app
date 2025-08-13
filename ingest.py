@@ -1,47 +1,47 @@
 import os
 import pandas as pd
-import google.generativeai as genai
+from sentence_transformers import SentenceTransformer
 from qdrant_client import QdrantClient, models
 from dotenv import load_dotenv
 from tqdm import tqdm
 
 load_dotenv()
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+vector_size = 384
 
-if not GEMINI_API_KEY:
-    raise ValueError("GEMINI_API_KEY not found in .env file")
-
-# qdrant client
-print("Initializing Qdrant client...")
 qdrant_client = QdrantClient(url="http://localhost:6333")
 
-# gemini client
-print("Initializing Gemini client...")
-genai.configure(api_key=GEMINI_API_KEY)
-
-# create collection
 collection_name = "gym_exercises"
-print(f"Creating Qdrant collection: '{collection_name}'")
-try:
+
+print(f"Checking for existing collection '{collection_name}'")
+if qdrant_client.collection_exists(collection_name=collection_name):
+    print("Collection exists. Checking current document count...")
+    collection_info = qdrant_client.get_collection(collection_name=collection_name)
+    current_count = collection_info.points_count
+    print(f"Current collection has {current_count} documents.")
+    
+    if current_count > 0:
+        print("Collection already has data. Skipping ingestion to avoid duplicates.")
+        print("If you want to refresh the data, manually delete the collection first.")
+        exit(0)
+    else:
+        print("Collection exists but is empty. Will add new data.")
+else:
+    print(f"Creating new collection: '{collection_name}'")
     qdrant_client.create_collection(
         collection_name=collection_name,
         vectors_config=models.VectorParams(
-            size=768,
-            distance=models.Distance.COSINE
+            size=vector_size,
+            distance=models.Distance.COSINE,
         ),
     )
-    print("Collection created successfully.")
-except Exception as e:
-    print(f"Collection may already exist... Info: {e}")
 
 
-# load data
-print("Loading data from CSV file...")
 df = pd.read_csv("data/megaGymDataset.csv")
-
+df = df.dropna(subset=['Title', 'Desc', 'Type', 'BodyPart', 'Equipment', 'Level'])
+df = df.astype(str)
 df['id'] = df.index
 
-# create document text
 def create_document_text(row):
     return (
         f"Title: {row['Title']}\n"
@@ -49,36 +49,26 @@ def create_document_text(row):
         f"Type: {row['Type']}\n"
         f"Body Part: {row['BodyPart']}\n"
         f"Equipment: {row['Equipment']}\n"
-        f"Level: {row['Level']}\n"
-        f"Rating: {row['Rating']}\n"
-        f"Rating Description: {row['RatingDesc']}"
+        f"Level: {row['Level']}"
     )
 
-df['document_text'] = df.apply(create_document_text, axis=1)
-print(f"Loaded and prepared {len(df)} documents.")
+df["document_text"] = df.apply(create_document_text, axis=1)
 
+print(f"Loaded and prepared {len(df)} documents for ingestion.")
 
-print("Starting ingestion..")
-
-batch_size = 32
+batch_size = 100
 for i in tqdm(range(0, len(df), batch_size)):
-    batch_df = df.iloc[i:i+batch_size]
+    batch_df = df.iloc[i : i + batch_size]
+    texts_to_embed = batch_df["document_text"].tolist()
 
-    texts_to_embed = batch_df['document_text'].tolist()
+    embeddings = embedding_model.encode(texts_to_embed)
+    
+    vectors = embeddings.tolist()
 
-    #gemini api
-    embedding_response = genai.embed_content(
-        model='models/embedding-001',
-        content=texts_to_embed,
-        task_type="RETRIEVAL_DOCUMENT"
-    )
-    vectors = embedding_response['embedding']
-
-    # qdrant api
     qdrant_client.upsert(
         collection_name=collection_name,
         points=models.Batch(
-            ids=batch_df['id'].tolist(),
+            ids=batch_df["id"].tolist(),
             vectors=vectors,
             payloads=[
                 {
@@ -86,11 +76,13 @@ for i in tqdm(range(0, len(df), batch_size)):
                     "type": row["Type"],
                     "muscle": row["BodyPart"],
                     "equipment": row["Equipment"],
+                    "level": row["Level"],
                     "text": row["document_text"],
-                } for index, row in batch_df.iterrows()
-            ]
+                }
+                for _, row in batch_df.iterrows()
+            ],
         ),
-        wait=True
+        wait=False
     )
 
 print("Your data has been successfully ingested into Qdrant")
